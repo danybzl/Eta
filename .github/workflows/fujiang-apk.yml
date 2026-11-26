@@ -1,0 +1,96 @@
+name: 富江破甲 Eta APK
+
+# 一键出包：推到自己的仓库 → Actions → 选这个工作流 → Run workflow → 下 Artifact。
+# 只需要一个 GitHub 账号，不需要本机装 JDK / Android SDK。
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "构建类型"
+        type: choice
+        options: ["debug", "release"]
+        default: "debug"
+  push:
+    tags:
+      - "fujiang-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fujiang-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建注入版 APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: 配置构建环境（JDK 25 / Gradle / Android SDK 37.2）
+        uses: ./.github/actions/setup-build
+
+      - name: 确认注入状态
+        shell: bash
+        run: |
+          python3 fujiang/apply_fujiang.py --root "$PWD" --verify
+
+      - name: 构建 Debug APK
+        if: ${{ github.event.inputs.variant != 'release' }}
+        shell: bash
+        run: |
+          ./gradlew --no-daemon --no-configuration-cache :app:assembleDebug -x lintDebug -x testDebugUnitTest
+
+      - name: 构建 Release APK（需要签名 Secrets）
+        if: ${{ github.event.inputs.variant == 'release' }}
+        shell: bash
+        env:
+          ETA_RELEASE_KEYSTORE_BASE64: ${{ secrets.ETA_RELEASE_KEYSTORE_BASE64 }}
+          ETA_RELEASE_STORE_PASSWORD: ${{ secrets.ETA_RELEASE_STORE_PASSWORD }}
+          ETA_RELEASE_KEY_ALIAS: ${{ secrets.ETA_RELEASE_KEY_ALIAS }}
+          ETA_RELEASE_KEY_PASSWORD: ${{ secrets.ETA_RELEASE_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$ETA_RELEASE_KEYSTORE_BASE64" ]]; then
+            echo "::warning::没有签名 Secrets，Release 不带签名，改用 Debug 包安装即可。"
+            ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease -x lintRelease -x testReleaseUnitTest || true
+          else
+            printf '%s' "$ETA_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/eta-release.jks"
+            export ETA_RELEASE_STORE_FILE="$RUNNER_TEMP/eta-release.jks"
+            ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease -x lintRelease -x testReleaseUnitTest
+          fi
+
+      - name: 整理产物
+        shell: bash
+        run: |
+          mkdir -p fujiang-out
+          for f in app/build/outputs/apk/*/*.apk; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f" .apk)"
+            cp "$f" "fujiang-out/${base}-fujiang.apk"
+          done
+          ls -la fujiang-out
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Eta-fujiang-armor-apk
+          path: fujiang-out/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 摘要
+        shell: bash
+        run: |
+          {
+            echo "## 富江破甲 · Eta 注入版"
+            echo ""
+            echo "- 载荷版本：0.4.3（sha256 \`dfad664948945d39b9c9058c40258c35355781926307102d1980fb1537f879d9\`）"
+            echo "- 安装后发「富江」验证，回复应以 \`TG交流群@FJNB22\` 开头"
+            echo "- 覆盖安装要求签名一致；签名不一致先卸载旧包"
+          } >> "$GITHUB_STEP_SUMMARY"
