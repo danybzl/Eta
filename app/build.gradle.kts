@@ -72,7 +72,8 @@ android {
         }
         release {
             versionNameSuffix = buildMetadataSuffix
-            signingConfig = signingConfigs.findByName("release")
+            // 没配发版 keystore 时退回 debug 签名，保证 CI 也能出体积正常的可安装包（富江破甲 fork 追加）
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
